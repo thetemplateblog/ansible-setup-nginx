@@ -1,0 +1,140 @@
+---
+- name: Manage Nginx virtual hosts with PHP in standalone mode
+  hosts: localhost
+  become: true
+  connection: local
+  vars:
+    nginx_vhosts:
+      - server_name: example.dev
+        index: index.php index.html index.htm
+      - server_name: davidchilds.dev
+        index: index.php index.html index.htm
+    log_files:
+      - access.log
+      - error.log
+    dhparam_path: "/etc/nginx/dhparam.pem"
+    dhparam_size: 2048
+    ssl_cert_path: "/etc/ssl/certs"
+    ssl_key_path: "/etc/ssl/private"
+    cert_filename: "nginx-selfsigned.crt"
+    key_filename: "nginx-selfsigned.key"
+    country: "US"
+    state: "California"
+    city: "San Francisco"
+    organization: "My Company"
+    organizational_unit: "IT Department"
+    common_name: "example.com"
+    snippets_to_copy:
+      - "self-signed.conf"
+      - "ssl-params.conf"
+
+  tasks:
+    - name: Install Nginx and PHP
+      apt:
+        name:
+          - nginx
+          - php8.3-fpm
+          - php8.3-mbstring
+          - php8.3-mysql
+          - php8.3-curl
+          - php8.3-gd
+          - php8.3-zip
+          - php8.3-xml
+        state: present
+        update_cache: yes
+
+    - name: Copy snippets files from the existing repo to the destination
+      copy:
+        src: "files/snippets/{{ item }}"
+        dest: "/etc/nginx/snippets/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ snippets_to_copy }}"
+
+    - name: Create document root directories for each virtual host
+      file:
+        path: "/var/www/{{ item.server_name }}/html"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: "{{ nginx_vhosts }}"
+
+    - name: Deploy Nginx virtual host configuration
+      template:
+        src: templates/nginx_vhost.j2
+        dest: "/etc/nginx/sites-available/{{ item.server_name }}"
+      loop: "{{ nginx_vhosts }}"
+      notify: Restart Nginx
+
+    - name: Enable virtual hosts by creating symlinks
+      file:
+        src: "/etc/nginx/sites-available/{{ item.server_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ item.server_name }}"
+        state: link
+      loop: "{{ nginx_vhosts }}"
+      notify: Restart Nginx
+
+    - name: Ensure log directories exist
+      file:
+        path: "/var/www/{{ item.server_name }}/log"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop: "{{ nginx_vhosts }}"
+
+    - name: Create or update log files
+      file:
+        path: "/var/www/{{ item.0.server_name }}/log/{{ item.1 }}"
+        state: touch
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ nginx_vhosts | product(log_files) | list }}"
+
+    - name: Ensure the SSL directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "{{ ssl_cert_path }}"
+        - "{{ ssl_key_path }}"
+
+    - name: Generate self-signed SSL certificate and private key
+      command: >
+        openssl req -new -newkey rsa:2048 -days 365 -nodes -x509
+        -subj "/C={{ country }}/ST={{ state }}/L={{ city }}/O={{ organization }}/OU={{ organizational_unit }}/CN={{ common_name }}"
+        -keyout "{{ ssl_key_path }}/{{ key_filename }}"
+        -out "{{ ssl_cert_path }}/{{ cert_filename }}"
+      args:
+        creates: "{{ ssl_cert_path }}/{{ cert_filename }}"
+
+    - name: Test Nginx configuration
+      command: nginx -t
+      register: nginx_test
+      ignore_errors: true
+
+    - name: Fail if Nginx configuration is invalid
+      fail:
+        msg: "Nginx configuration test failed"
+      when: nginx_test.rc != 0
+
+    - name: Copy test PHP file as index.php to show the virtual host
+      template:
+        src: "templates/index.php"
+        dest: "/var/www/{{ item.server_name }}/html/index.php"
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ nginx_vhosts }}"
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
