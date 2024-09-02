@@ -5,6 +5,8 @@
   connection: local
   vars:
     nginx_vhosts:
+      - server_name: example1.dev
+        index: index.php index.html index.htm
       - server_name: example.dev
         index: index.php index.html index.htm
       - server_name: davidchilds.dev
